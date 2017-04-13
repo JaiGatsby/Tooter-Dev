@@ -1,2 +1,2 @@
-kilo: kilo.c
-	$(CC) kilo.c -o kilo -Wall -Wextra -pedantic -std=c99
+wynaut: wynaut.c
+	$(CC) wynaut.c -o wynaut -Wall -Wextra -pedantic -std=c99
