@@ -1,3 +1,4 @@
+// @TODO Step 50
 /** includes **/
 #include <stdlib.h>
 #include <unistd.h>
@@ -10,11 +11,22 @@
 
 /** defines **/
 
+#define WYNAUT_VERSION "0.0.1"
+
 // ANDs a character with 00011111
 #define CTRL_KEYS(k) ((k) & 0x1f)
 
+
+enum editorKey{
+	ARROW_LEFT = 1000,
+	ARROW_RIGHT,
+	ARROW_UP,
+	ARROW_DOWN
+};
+
 /** data **/
 struct editorConfig {
+	int cx,cy; // cursor position
 	int screenrows;
 	int screencols;
 	struct termios orig_termios;
@@ -62,8 +74,8 @@ void enableRawMode(){
 }
 
 // Waits for one key press, reads(low-level) it and returns it
-// Later functionality to be added -> handle escape sequences
-char editorReadKey(){
+// if esc sequence detected, would read further
+int editorReadKey(){
 	int nread;
 	char c;
 	while((nread = read(STDIN_FILENO,&c,1)) != 1){
@@ -71,7 +83,31 @@ char editorReadKey(){
 			die("read");
 		}
 	}
-	return c;
+
+	if (c =='\x1b'){
+		char seq[3];
+
+		if (read(STDIN_FILENO, &seq[0],1) != 1) return'\x1b';
+		if (read(STDIN_FILENO, &seq[1],1) != 1) return'\x1b';
+
+		// Checks for arrow keys and maps them to 'wasd'
+		if (seq[0] == '['){
+			switch(seq[1]){
+				case 'A':
+					return ARROW_UP;
+				case 'B':
+					return ARROW_DOWN;
+				case 'C':
+					return ARROW_RIGHT;
+				case 'D':
+					return ARROW_LEFT;
+			}
+		}
+		return '\x1b';
+	}
+	else{
+		return c;
+	}
 }
 
 //returns the position of the cursor
@@ -144,8 +180,32 @@ void abFree(struct abuf* ab){
 // Draws a '~' on every line
 void editorDrawRows(struct abuf* ab){
 	for (int y=0; y<E.screenrows; y++){
-		abAppend(ab,"~",1);
+		// prints welcome message
+		if (y == E.screenrows/3){
+			char welcome[80];
+			int welcomelen = snprintf(welcome,sizeof(welcome),"Wynaut editor -- version %s", WYNAUT_VERSION);
+			// truncates message to fit
+			if (welcomelen > E.screencols) welcomelen = E.screencols;
+			// calculates padding to centre text
+			int padding = (E.screencols - welcomelen)/2;
+			if (padding){
+				abAppend(ab,"~",1);
+				padding--;
+			}
+			// centers the welcome message
+			while(padding--)abAppend(ab," ",1);
+			abAppend(ab,welcome,welcomelen);
+		}
+		else{
+			abAppend(ab,"~",1);
+		}
 
+		// 4 -> writing 4 bytes to terminal
+		// \x1b is the escape character
+		// Escape sequences always start with escape character and [
+		// K command erases part of current line
+		// 0 is the default argument to K, clear entire line to right of cursor
+		abAppend(ab,"\x1b[K",3);
 		// Does not print new line on last line
 		if(y < E.screenrows -1){
 			abAppend(ab,"\r\n",2);
@@ -156,29 +216,54 @@ void editorDrawRows(struct abuf* ab){
 // Refreshes screen with new ouput every step
 void editorRefreshScreen(){
 	struct abuf ab = ABUF_INIT;
-	// 4 -> writing 4 bytes to terminal
-	// \x1b is the escape character
-	// Escape sequences always start with escape character and [
-	// J command clears screen
-	// 2 is an argument to J, clear entire screen
-	abAppend(&ab,"\x1b[2J",4);
+	// hides the cursor
+	abAppend(&ab, "\x1b[?25l",6);
+
 	// H command repositions cursor
 	// It takes two arguments, but defaults to 1;1
 	abAppend(&ab,"\x1b[H", 3);
 
 	editorDrawRows(&ab);
 
-	abAppend(&ab,"\x1b[H",3);
+	// Repositions cursor
+	char buf[32];
+	snprintf(buf,sizeof(buf),"\x1b[%d;%dH",E.cy+1,E.cx+1); // add 1 to conform to 1 based indexing of terminal
+	abAppend(&ab, buf, strlen(buf));
+
+	abAppend(&ab, "\x1b[?25h",6);	// shows the cursor
 
 	write(STDOUT_FILENO, ab.b,ab.len);
 	abFree(&ab);
 }
 
 /** input **/
+
+// allows user to move using 'wasd' keys
+void editorMoveCursor(int key){
+	switch (key) {
+		case ARROW_LEFT:
+			if (E.cx !=0)
+			E.cx--;
+			break;
+		case ARROW_RIGHT:
+			if (E.cx != E.screencols-1)
+			E.cx++;
+			break;
+		case ARROW_UP:
+			if (E.cy != 0)
+			E.cy--;
+			break;
+		case ARROW_DOWN:
+			if (E.cy != E.screenrows-1)
+			E.cy++;
+			break;
+	}
+}
+
 // waits for keypress and handles it
 // Later -> handle special combinations
 void editorProcessKeypress(){
-	char c = editorReadKey();
+	int c = editorReadKey();
 
 	switch(c){
 		case CTRL_KEYS('q'):
@@ -187,14 +272,24 @@ void editorProcessKeypress(){
 			write(STDOUT_FILENO,"\x1b[H", 3);
 			exit(0);
 			break;
+		case ARROW_UP:
+		case ARROW_DOWN:
+		case ARROW_RIGHT:
+		case ARROW_LEFT:
+			editorMoveCursor(c);
+			break;
 		default:
 		printf("%c", c);
+		break;
 	}
 }
 
 /** init **/
 
 int initEditor(){
+	E.cx = 0;
+	E.cy = 0;
+
 	if (getWindowsSize(&E.screenrows, &E.screencols) ==-1){
 		die("getWindowsSize");
 	}
