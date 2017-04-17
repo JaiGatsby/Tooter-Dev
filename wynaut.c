@@ -5,8 +5,8 @@
 #include <ctype.h>
 #include <stdio.h>
 #include <errno.h>
+#include <string.h>
 #include <sys/ioctl.h>
-
 
 /** defines **/
 
@@ -74,27 +74,33 @@ char editorReadKey(){
 	return c;
 }
 
+//returns the position of the cursor
 int getCursorPosition(int* rows, int* cols){
+	char buf[32];
+	unsigned int i=0;
+
 	if(write(STDOUT_FILENO,"\x1b[6n",4) != 4){
 		return -1;
 	}
-	printf("\r\n");
-	char c;
-	while (read(STDIN_FILENO,&c,1)==1){
-		if(iscntrl(c)){
-			printf("%d\r\n",c);
-		} else {
-			printf("%d ('%c')\r\n",c,c);
-		}
+	// parses the formating
+	while (i<sizeof(buf)-1){ 
+		if(read(STDIN_FILENO,&buf[i],1)!=1)break;
+		if (buf[i] == 'R')break;
+		i++;
 	}
-	editorReadKey();
 
-	return -1;
+	buf[i] = '\0';
+
+	if (buf[0] != '\x1b' || buf[1] != '[') return 1;
+	if (sscanf(&buf[2], "%d;%d",rows,cols) !=2)return -1;
+
+	return 0;
 }
 
+// Gets the number of rows and cols
 int getWindowsSize(int* rows, int* cols){
 	struct winsize ws;
-	if (1 || ioctl(STDOUT_FILENO,TIOCGWINSZ, &ws)==-1 || ws.ws_col == 0){
+	if (ioctl(STDOUT_FILENO,TIOCGWINSZ, &ws)==-1 || ws.ws_col == 0){
 		if (write(STDOUT_FILENO,"\x1b[999C\x1b[999B",12) != 12) return -1;
 		return getCursorPosition(rows,cols);
 	}
@@ -105,28 +111,67 @@ int getWindowsSize(int* rows, int* cols){
 	}
 }
 
+/** append buffer **/
+
+// creating a dynamic string type for write buffer
+struct abuf{
+	char* b;
+	int len;
+};
+
+// constructor
+#define ABUF_INIT {NULL, 0}
+
+// appends string s of length len to buffer
+void abAppend(struct abuf* ab, const char* s, int len){
+	char* new = realloc(ab->b, ab->len + len); // Resizes and returns pointer to buffer
+
+	if (new != NULL){
+		memcpy(&new[ab->len],s,len); // Appends string to end of buffer
+		
+		// re-assigns buffer pointer to new
+		ab->b = new;
+		ab->len +=len;	
+	}
+}
+
+// ~abuf | destructor
+void abFree(struct abuf* ab){
+	free(ab->b);
+}
+
 /** output **/
-void editorDrawRows(){
+// Draws a '~' on every line
+void editorDrawRows(struct abuf* ab){
 	for (int y=0; y<E.screenrows; y++){
-		write(STDOUT_FILENO,"~\r\n",3);
+		abAppend(ab,"~",1);
+
+		// Does not print new line on last line
+		if(y < E.screenrows -1){
+			abAppend(ab,"\r\n",2);
+		}
 	}
 }
 
 // Refreshes screen with new ouput every step
 void editorRefreshScreen(){
+	struct abuf ab = ABUF_INIT;
 	// 4 -> writing 4 bytes to terminal
 	// \x1b is the escape character
 	// Escape sequences always start with escape character and [
 	// J command clears screen
 	// 2 is an argument to J, clear entire screen
-	write(STDOUT_FILENO,"\x1b[2J",4);
+	abAppend(&ab,"\x1b[2J",4);
 	// H command repositions cursor
 	// It takes two arguments, but defaults to 1;1
-	write(STDOUT_FILENO,"\x1b[H", 3);
+	abAppend(&ab,"\x1b[H", 3);
 
-	editorDrawRows();
+	editorDrawRows(&ab);
 
-	write(STDOUT_FILENO,"\x1b[H",3);
+	abAppend(&ab,"\x1b[H",3);
+
+	write(STDOUT_FILENO, ab.b,ab.len);
+	abFree(&ab);
 }
 
 /** input **/
@@ -154,6 +199,7 @@ int initEditor(){
 		die("getWindowsSize");
 	}
 }
+
 int main() {
 	enableRawMode();
 	initEditor();
