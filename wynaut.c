@@ -1,4 +1,4 @@
-// @TODO Step 90
+// @TODO Step 101
 /** includes **/
 
 #define _DEFAULT_SOURCE
@@ -11,11 +11,14 @@
 #include <ctype.h>
 #include <stdio.h>
 #include <errno.h>
+#include <time.h>
+#include <stdarg.h>
 #include <string.h>
 #include <sys/types.h>
 #include <sys/ioctl.h>
 
 /** defines **/
+
 
 #define WYNAUT_VERSION "0.0.1"
 #define WYNAUT_TAB_STOP 4
@@ -56,6 +59,9 @@ struct editorConfig {
 	int screencols;
 	int numrows;
 	erow* row;
+	char* filename; // to be displayed in status bar
+	char statusmsg[80];
+	time_t statusmsg_time;
 	struct termios orig_termios;
 };
 
@@ -251,6 +257,9 @@ void editorAppendRow(char* s, size_t len){
 /** file i/o **/
 
 void editorOpen(char* filename) {
+	free(E.filename);
+	E.filename = strdup(filename); // copies given string and dynamically allocates memory
+
 	FILE* fp = fopen(filename,"r");
 	if (!fp) die("fopen");
 
@@ -317,7 +326,7 @@ void editorScroll(){
 	}
 }
 
-// Draws a '~' on every line
+// Prints each line reading from a file
 void editorDrawRows(struct abuf* ab){
 	for (int y=0; y<E.screenrows; y++){
 		int filerow = y + E.rowoff;
@@ -354,9 +363,43 @@ void editorDrawRows(struct abuf* ab){
 		// 0 is the default argument to K, clear entire line to right of cursor
 		abAppend(ab,"\x1b[K",3);
 		// Does not print new line on last line
-		if(y < E.screenrows -1){
-			abAppend(ab,"\r\n",2);
+		abAppend(ab,"\r\n",2);
+	}
+}
+
+// Creates a status bar at the end of the page
+void editorDrawStatusBar(struct abuf* ab){
+	abAppend(ab, "\x1b[7m",4); // Inverts colors
+	char status[80], rstatus[80];
+	int len = snprintf(status, sizeof(status), "%.20s - %d lines", E.filename ? E.filename : "[No name]", E.numrows); // Copies filename to status and returns size to len, if doesnt exist puts "[No Name]"
+	int rlen = snprintf(rstatus, sizeof(rstatus), "%d/%d lines", E.cy+1,E.numrows); // current line
+	if (len > E.screencols) len = E.screencols; // Truncates the size to screenwidth
+	abAppend(ab,status,len);
+	while (len < E.screencols) {
+		if (E.screencols - len == rlen){ // when enough spaces have been printed that rstatus can be printed, print it and break
+			abAppend(ab,rstatus,rlen);
+			break;
 		}
+		else{
+			abAppend(ab, " ", 1);	// Prints blank lines till the end so that entire bar has white background
+			len++;
+		}
+	}
+	abAppend(ab, "\x1b[m",3); // Reverts colors back to normal
+	abAppend(ab, "\r\n", 2); // Making space for further status messages
+}
+
+// Displays a message at the bottom of the screen
+void editorDrawMessageBar(struct abuf* ab){
+	abAppend(ab, "\x1b[K",3); // clear the message bar
+
+	// ensure that message fits the screen
+	int msglen = strlen(E.statusmsg);
+	if (msglen > E.screencols - 20) msglen = E.screencols;
+
+	//make sure message is less than 5 seconds old
+	if (msglen && (time(NULL) - E.statusmsg_time < 5)){
+		abAppend(ab, E.statusmsg, msglen);
 	}
 }
 
@@ -372,6 +415,8 @@ void editorRefreshScreen(){
 	abAppend(&ab,"\x1b[H", 3);
 
 	editorDrawRows(&ab);
+	editorDrawStatusBar(&ab);
+	editorDrawMessageBar(&ab);
 
 	// Repositions cursor
 	char buf[32];
@@ -384,9 +429,23 @@ void editorRefreshScreen(){
 	abFree(&ab);
 }
 
+/** Sets a message to be set in status bar 
+ * '...' means this function can take any number of arguments
+ * These are stored in a va_list and you can cycle through them by calling
+ * va_start and va_end
+ * vsnprintf creates printf-style function	
+ */
+void editorSetStatusMessage(const char* fmt, ...){
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(E.statusmsg, sizeof(E.statusmsg), fmt, ap);
+	va_end(ap);
+	E.statusmsg_time = time(NULL);
+}
+
 /** input **/
 
-// allows user to move using 'wasd' keys
+// allows user to move using arrow keys
 void editorMoveCursor(int key){
 	erow* row = (E.cy >=E.numrows)?NULL:&E.row[E.cy];
 
@@ -442,11 +501,19 @@ void editorProcessKeypress(){
 			E.cx = 0;
 			break;
 		case END_KEY:
-			E.cx = E.screencols-1;
+			if (E.cy < E.numrows)
+				E.cx = E.row[E.cy].size;
 			break;
 		case PAGE_UP:
 		case PAGE_DOWN: // We create a block of code as otherwise we cant initialize a new variable in a switch statement
 			{
+				if (c == PAGE_UP){
+					E.cy = E.rowoff;
+				}
+				else if (c == PAGE_DOWN){
+					E.cy = E.rowoff + E.screenrows - 1; // adds screen number of rows to rowoff
+					if (E.cy > E.numrows) E.cy = E.numrows;
+				}
 				int times = E.screenrows;
 				while (times--){ // simulates up/down keys being pressed multiple times
 					editorMoveCursor(c == PAGE_UP ? ARROW_UP : ARROW_DOWN);
@@ -475,10 +542,16 @@ void initEditor(){
 	E.coloff = 0;
 	E.numrows = 0;
 	E.row = NULL;
+	E.filename = NULL;
+	E.statusmsg[0] = '\0';
+	E.statusmsg_time = 0;
 
 	if (getWindowsSize(&E.screenrows, &E.screencols) ==-1){
 		die("getWindowsSize");
 	}
+
+	// Makes way for status bars at the bottom
+	E.screenrows -= 2;
 }
 
 int main(int argc, char* argv[]) {
@@ -487,6 +560,8 @@ int main(int argc, char* argv[]) {
 	if (argc >= 2){
 		editorOpen(argv[1]);
 	}
+
+	editorSetStatusMessage("HELP: Ctrl-Q = quit");
 
 	while (1){	//Empty while loop that keeps taking input till user enters 'q'
 		editorRefreshScreen();
