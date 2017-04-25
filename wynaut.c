@@ -1,4 +1,4 @@
-// @TODO Step 101
+// @TODO Step 111
 /** includes **/
 
 #define _DEFAULT_SOURCE
@@ -7,6 +7,7 @@
 
 #include <stdlib.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <termios.h>
 #include <ctype.h>
 #include <stdio.h>
@@ -24,10 +25,12 @@
 #define WYNAUT_TAB_STOP 4
 
 // ANDs a character with 00011111
+// returns the ctrl + k combination
 #define CTRL_KEYS(k) ((k) & 0x1f)
 
 
 enum editorKey{
+	BACKSPACE = 127,
 	ARROW_LEFT = 1000,
 	ARROW_RIGHT,
 	ARROW_UP,
@@ -41,7 +44,7 @@ enum editorKey{
 
 /** data **/
 
-// defines datatype erow to be a struct with char array and size
+// defines datatype e(each)row to be a struct with char array and size
 typedef struct erow {
 	int size;
 	int rsize;
@@ -66,6 +69,10 @@ struct editorConfig {
 };
 
 struct editorConfig E;
+
+/** prototypes **/
+
+void editorSetStatusMessage(const char* fmt, ...);
 
 /** terminal **/
 void die(const char *s){
@@ -254,8 +261,55 @@ void editorAppendRow(char* s, size_t len){
 	E.numrows++;
 }
 
+// Deals with how to modify a row and adds a char in a specific place
+void editorRowInsertChar(erow* row, int at, int c){
+	// checks if input point is in bounds
+	if (at < 0 || at > row->size) at = row->size;
+	// we add 2 bytes as 1 for the character and one for the null character
+	// but does there not already exist a null char?
+	row->chars = realloc(row->chars,row->size + 2);
+	// All the characters from 'at' onwards are moved one step ahead to
+	// make space for the inserted character
+	memmove(&row->chars[at+1], &row->chars[at], row->size - at +1);
+	row->size++;
+	row->chars[at] = c;
+	editorUpdateRow(row);
+}
+
+/** editor operations **/
+
+// Deals with where the cursor is and adds a char
+void editorInsertChar(int c){
+	// checks if cursor is at end of line,and then adds a new row
+	if(E.cy == E.numrows) {
+		editorAppendRow("",0);
+	}
+	editorRowInsertChar(&E.row[E.cy],E.cx,c);
+	E.cx++; // move cursor forward
+}
 /** file i/o **/
 
+// returns the entire file as a char*
+char* editorRowsToString(int* buflen){
+	int totlen = 0;
+	int j;
+	for (j =0; j < E.numrows; j++){
+		totlen += E.row[j].size +1; // +1 for \n
+	}
+	*buflen = totlen; // num of chars in file
+
+	char* buf = malloc(totlen);
+	char* p = buf;
+	for (j = 0; j<E.numrows; j++){
+		memcpy(p, E.row[j].chars, E.row[j].size);//copies each row to string
+		p += E.row[j].size;
+		*p = '\n';
+		p++;
+	}
+	return buf; // expect caller to free memory
+}
+
+// opens a file and loads it into editorConfig
 void editorOpen(char* filename) {
 	free(E.filename);
 	E.filename = strdup(filename); // copies given string and dynamically allocates memory
@@ -273,6 +327,33 @@ void editorOpen(char* filename) {
 	}
 	free(line);
 	fclose(fp);
+}
+
+// saves to file
+void editorSave(){
+	if(E.filename == NULL) return;
+
+	int len;
+	char* buf = editorRowsToString(&len); //gets the entire file
+
+	// open creates a new file if it doesnt exist O_CREAT and 
+	//opens it for reading and writing O_RDWR
+	// 0644 is standard permissions
+	int fd = open(E.filename, O_RDWR | O_CREAT, 0644);
+	if (fd != -1){
+		if (ftruncate(fd,len)!= -1){// sets file size to specific length
+		// we manually truncate so that in case write fails, we still have some data
+			if (write(fd, buf, len) == len){
+				close(fd);
+				free(buf);
+				editorSetStatusMessage("%d bytes written to disk", len);
+				return;
+			}
+		}
+		close(fd);
+	}
+	free(buf);
+	editorSetStatusMessage("Can't save! I/O error: %s", strerror(errno));
 }
 
 /** append buffer **/
@@ -491,19 +572,36 @@ void editorProcessKeypress(){
 	int c = editorReadKey();
 
 	switch(c){
+		case '\r':
+			/* TODO */
+			break;
+
 		case CTRL_KEYS('q'):
 			// Clears the screen and resets the cursor. See editorRefreshScreen for details
 			write(STDOUT_FILENO,"\x1b[2J",4);
 			write(STDOUT_FILENO,"\x1b[H", 3);
 			exit(0);
 			break;
+			
+		case CTRL_KEYS('s'):
+			editorSave();
+			break;
+
 		case HOME_KEY:
 			E.cx = 0;
 			break;
+
 		case END_KEY:
 			if (E.cy < E.numrows)
 				E.cx = E.row[E.cy].size;
 			break;
+
+		case BACKSPACE:
+		case CTRL_KEYS('h'): //Ctrl+H sends same code as what backspace used to
+		case DEL_KEY:
+			/* TODO */
+			break;
+
 		case PAGE_UP:
 		case PAGE_DOWN: // We create a block of code as otherwise we cant initialize a new variable in a switch statement
 			{
@@ -520,14 +618,21 @@ void editorProcessKeypress(){
 				}
 			}
 			break;
+
 		case ARROW_UP:
 		case ARROW_DOWN:
 		case ARROW_RIGHT:
 		case ARROW_LEFT:
 			editorMoveCursor(c);
 			break;
+
+		case CTRL_KEYS('l'):
+		case '\x1b': // <esc> Not doing anything as we are not handling
+			break;
+
 		default:
-		printf("%c", c);
+		// printf("%c", c);
+		editorInsertChar(c);
 		break;
 	}
 }
@@ -561,7 +666,7 @@ int main(int argc, char* argv[]) {
 		editorOpen(argv[1]);
 	}
 
-	editorSetStatusMessage("HELP: Ctrl-Q = quit");
+	editorSetStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit");
 
 	while (1){	//Empty while loop that keeps taking input till user enters 'q'
 		editorRefreshScreen();
