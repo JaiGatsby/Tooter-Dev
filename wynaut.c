@@ -1,4 +1,4 @@
-// @TODO Step 111
+// @TODO Step 119
 /** includes **/
 
 #define _DEFAULT_SOURCE
@@ -23,6 +23,7 @@
 
 #define WYNAUT_VERSION "0.0.1"
 #define WYNAUT_TAB_STOP 4
+#define WYNAUT_QUIT_TIMES 3
 
 // ANDs a character with 00011111
 // returns the ctrl + k combination
@@ -62,6 +63,7 @@ struct editorConfig {
 	int screencols;
 	int numrows;
 	erow* row;
+	int dirty; //To check if the input file has been modified in anyway
 	char* filename; // to be displayed in status bar
 	char statusmsg[80];
 	time_t statusmsg_time;
@@ -259,6 +261,17 @@ void editorAppendRow(char* s, size_t len){
 	editorUpdateRow(&E.row[at]);
 
 	E.numrows++;
+	E.dirty++;
+}
+
+// deletes characters given position
+void editorRowDelChar(erow* row, int at){
+	if(at<0 || at >= row->size) return;
+	// move all characters that come after the character one step back
+	memmove(&row->chars[at],&row->chars[at+1],row->size - at);
+	row->size--;
+	editorUpdateRow(row);
+	E.dirty++;
 }
 
 // Deals with how to modify a row and adds a char in a specific place
@@ -274,6 +287,7 @@ void editorRowInsertChar(erow* row, int at, int c){
 	row->size++;
 	row->chars[at] = c;
 	editorUpdateRow(row);
+	E.dirty++;
 }
 
 /** editor operations **/
@@ -287,6 +301,16 @@ void editorInsertChar(int c){
 	editorRowInsertChar(&E.row[E.cy],E.cx,c);
 	E.cx++; // move cursor forward
 }
+// Mapped to Backspace character
+void editorDelChar(){
+	if(E.cy == E.numrows) return;
+	erow* row = &E.row[E.cy];
+	if (E.cx >0){
+		editorRowDelChar(row,E.cx-1);
+		E.cx--;
+	}
+}
+
 /** file i/o **/
 
 // returns the entire file as a char*
@@ -327,6 +351,7 @@ void editorOpen(char* filename) {
 	}
 	free(line);
 	fclose(fp);
+	E.dirty = 0;
 }
 
 // saves to file
@@ -346,6 +371,7 @@ void editorSave(){
 			if (write(fd, buf, len) == len){
 				close(fd);
 				free(buf);
+				E.dirty=0;
 				editorSetStatusMessage("%d bytes written to disk", len);
 				return;
 			}
@@ -452,7 +478,7 @@ void editorDrawRows(struct abuf* ab){
 void editorDrawStatusBar(struct abuf* ab){
 	abAppend(ab, "\x1b[7m",4); // Inverts colors
 	char status[80], rstatus[80];
-	int len = snprintf(status, sizeof(status), "%.20s - %d lines", E.filename ? E.filename : "[No name]", E.numrows); // Copies filename to status and returns size to len, if doesnt exist puts "[No Name]"
+	int len = snprintf(status, sizeof(status), "%.20s - %d lines %s", E.filename ? E.filename : "[No name]", E.numrows,E.dirty?"(modified)":""); // Copies filename to status and returns size to len, if doesnt exist puts "[No Name]"
 	int rlen = snprintf(rstatus, sizeof(rstatus), "%d/%d lines", E.cy+1,E.numrows); // current line
 	if (len > E.screencols) len = E.screencols; // Truncates the size to screenwidth
 	abAppend(ab,status,len);
@@ -569,6 +595,8 @@ void editorMoveCursor(int key){
 // waits for keypress and handles it
 // Later -> handle special combinations
 void editorProcessKeypress(){
+	static int quit_times = WYNAUT_QUIT_TIMES;
+
 	int c = editorReadKey();
 
 	switch(c){
@@ -577,6 +605,11 @@ void editorProcessKeypress(){
 			break;
 
 		case CTRL_KEYS('q'):
+			if(E.dirty && quit_times >0){
+				editorSetStatusMessage("WARNING!!! File has unsaved changes.Press Ctrl-Q %d more times to quit.",quit_times);
+				quit_times--;
+				return;
+			}
 			// Clears the screen and resets the cursor. See editorRefreshScreen for details
 			write(STDOUT_FILENO,"\x1b[2J",4);
 			write(STDOUT_FILENO,"\x1b[H", 3);
@@ -599,7 +632,8 @@ void editorProcessKeypress(){
 		case BACKSPACE:
 		case CTRL_KEYS('h'): //Ctrl+H sends same code as what backspace used to
 		case DEL_KEY:
-			/* TODO */
+			if (c == DEL_KEY) editorMoveCursor(ARROW_RIGHT);
+			editorDelChar();
 			break;
 
 		case PAGE_UP:
@@ -635,6 +669,8 @@ void editorProcessKeypress(){
 		editorInsertChar(c);
 		break;
 	}
+
+	quit_times = WYNAUT_QUIT_TIMES;
 }
 
 /** init **/
@@ -647,6 +683,7 @@ void initEditor(){
 	E.coloff = 0;
 	E.numrows = 0;
 	E.row = NULL;
+	E.dirty = 0;
 	E.filename = NULL;
 	E.statusmsg[0] = '\0';
 	E.statusmsg_time = 0;
