@@ -1,4 +1,4 @@
-// @TODO Step 119
+// @TODO Step 126
 /** includes **/
 
 #define _DEFAULT_SOURCE
@@ -75,6 +75,8 @@ struct editorConfig E;
 /** prototypes **/
 
 void editorSetStatusMessage(const char* fmt, ...);
+void editorRefreshScreen();
+char* editorPrompt(char* prompt);
 
 /** terminal **/
 void die(const char *s){
@@ -341,6 +343,8 @@ void editorInsertNewline() {
 		row->chars[row->size] = '\0';
 		editorUpdateRow(row);
 	}
+	E.cy++;
+	E.cx = 0;
 }
 // Mapped to Backspace character
 void editorDelChar(){
@@ -404,7 +408,13 @@ void editorOpen(char* filename) {
 
 // saves to file
 void editorSave(){
-	if(E.filename == NULL) return;
+	if(E.filename == NULL){
+        E.filename = editorPrompt("Save as: %s (ESC to cancel)");
+        if (E.filename == NULL){
+            editorSetStatusMessage("Save aborted");
+            return;
+        }
+    }
 
 	int len;
 	char* buf = editorRowsToString(&len); //gets the entire file
@@ -599,6 +609,50 @@ void editorSetStatusMessage(const char* fmt, ...){
 }
 
 /** input **/
+
+char* editorPrompt(char* prompt){
+	size_t bufsize = 128;
+	char* buf = malloc(bufsize);
+
+	size_t buflen = 0;
+	buf[0] = '\0';
+
+    // Inf loop, keeps asking user to enter a char
+    // Whenever it detects a key press, if it isnt a special key
+    // it updates status display and waits for next key
+    // if it is enter, it returns the string entered
+	while (1){
+		editorSetStatusMessage(prompt,buf);
+		editorRefreshScreen();
+
+		int c = editorReadKey();
+        // backspacing text
+        if (c == DEL_KEY || c == CTRL_KEYS('h') || c ==  BACKSPACE){
+            if (buflen != 0) buf[--buflen] = '\0';
+        }
+        // press ESC to exit
+        else if (c=='\x1b'){
+            editorSetStatusMessage("");
+            free(buf);
+            return NULL;
+        }
+		else if (c=='\r'){
+			if(buflen !=0){
+				editorSetStatusMessage("");
+				return buf; 
+			}
+		}
+		else if (!iscntrl(c) && c <128){
+            // doubles memory allocated to str in case its not enough
+			if (buflen == bufsize-1){
+				bufsize *= 2;
+				buf = realloc(buf, bufsize);
+			}
+			buf[buflen++] = c;
+			buf[buflen] = '\0';
+		}
+	}
+}
 
 // allows user to move using arrow keys
 void editorMoveCursor(int key){
