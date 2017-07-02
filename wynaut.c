@@ -1,4 +1,5 @@
-// @TODO Step 126
+// @TODO Step 135
+// consider adding fuzzy search 
 /** includes **/
 
 #define _DEFAULT_SOURCE
@@ -225,6 +226,20 @@ int editorRowCxToRx(erow* row, int cx){
 	return rx;
 }
 
+int editorRowRxToCx(erow* row, int rx){
+	int cur_rx = 0;
+	int cx;
+	for (cx = 0; cx < row->size; cx++){
+		if (row->chars[cx] == '\t'){
+			cur_rx += (WYNAUT_TAB_STOP - 1) - (cur_rx % WYNAUT_TAB_STOP);
+		}
+		cur_rx++;
+
+		if (cur_rx > rx) return cx;
+	}
+	return cx;
+}
+
 void editorUpdateRow(erow* row){
 	int tabs = 0;
 	for (int i =0; i<row->size;i++){
@@ -439,6 +454,31 @@ void editorSave(){
 	free(buf);
 	editorSetStatusMessage("Can't save! I/O error: %s", strerror(errno));
 }
+
+/** find **/
+
+// Implements the search function, asks for a query and returns first instance of it in file
+void editorFind(){
+	char* query = editorPrompt("Search: %s (ESC to cancel)");
+	if (query == NULL) return;
+
+	int i;
+	for (i=0; i<E.numrows; i++){
+		// loads each row in memory and checks for query
+		erow* row = &E.row[i];
+		// strstr checks for substring
+		char* match = strstr(row->render, query);
+		if (match){
+			E.cy = i;
+			E.cx = editorRowRxToCx(row, match - row->render);
+			E.rowoff = E.numrows; // so that the searched line would be at the top
+			break;
+		}
+	}
+
+	free(query);
+}
+
 
 /** append buffer **/
 
@@ -731,6 +771,10 @@ void editorProcessKeypress(){
 				E.cx = E.row[E.cy].size;
 			break;
 
+		case CTRL_KEYS('f'):
+			editorFind();
+			break;
+
 		case BACKSPACE:
 		case CTRL_KEYS('h'): //Ctrl+H sends same code as what backspace used to
 		case DEL_KEY:
@@ -805,7 +849,7 @@ int main(int argc, char* argv[]) {
 		editorOpen(argv[1]);
 	}
 
-	editorSetStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit");
+	editorSetStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find");
 
 	while (1){	//Empty while loop that keeps taking input till user enters 'q'
 		editorRefreshScreen();
