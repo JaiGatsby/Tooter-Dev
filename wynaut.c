@@ -77,7 +77,7 @@ struct editorConfig E;
 
 void editorSetStatusMessage(const char* fmt, ...);
 void editorRefreshScreen();
-char* editorPrompt(char* prompt);
+char* editorPrompt(char* prompt, void (*callback)(char*, int));
 
 /** terminal **/
 void die(const char *s){
@@ -424,7 +424,7 @@ void editorOpen(char* filename) {
 // saves to file
 void editorSave(){
 	if(E.filename == NULL){
-        E.filename = editorPrompt("Save as: %s (ESC to cancel)");
+        E.filename = editorPrompt("Save as: %s (ESC to cancel)", NULL);
         if (E.filename == NULL){
             editorSetStatusMessage("Save aborted");
             return;
@@ -457,26 +457,31 @@ void editorSave(){
 
 /** find **/
 
-// Implements the search function, asks for a query and returns first instance of it in file
-void editorFind(){
-	char* query = editorPrompt("Search: %s (ESC to cancel)");
-	if (query == NULL) return;
+void editorFindCallback(char* query, int key){
+	if(key == '\r' || key == '\x1b'){
+		return;
+	}
 
 	int i;
-	for (i=0; i<E.numrows; i++){
-		// loads each row in memory and checks for query
+	for (i = 0; i < E.numrows; i++){
 		erow* row = &E.row[i];
-		// strstr checks for substring
-		char* match = strstr(row->render, query);
+		char* match = strstr(row->render,query);
 		if (match){
 			E.cy = i;
 			E.cx = editorRowRxToCx(row, match - row->render);
-			E.rowoff = E.numrows; // so that the searched line would be at the top
+			E.rowoff = E.numrows;
 			break;
 		}
 	}
+}
 
-	free(query);
+// Implements the search function, asks for a query and returns first instance of it in file
+void editorFind(){
+	char* query = editorPrompt("Search: %s (ESC to cancel)", editorFindCallback);
+	
+	if (query){
+		free(query);
+	}
 }
 
 
@@ -650,7 +655,7 @@ void editorSetStatusMessage(const char* fmt, ...){
 
 /** input **/
 
-char* editorPrompt(char* prompt){
+char* editorPrompt(char* prompt, void (*callback)(char*, int)){
 	size_t bufsize = 128;
 	char* buf = malloc(bufsize);
 
@@ -673,12 +678,14 @@ char* editorPrompt(char* prompt){
         // press ESC to exit
         else if (c=='\x1b'){
             editorSetStatusMessage("");
+			if (callback) callback(buf, c);
             free(buf);
             return NULL;
         }
 		else if (c=='\r'){
 			if(buflen !=0){
 				editorSetStatusMessage("");
+				if (callback) callback(buf, c);
 				return buf; 
 			}
 		}
@@ -691,6 +698,8 @@ char* editorPrompt(char* prompt){
 			buf[buflen++] = c;
 			buf[buflen] = '\0';
 		}
+
+		if (callback) callback(buf, c);
 	}
 }
 
