@@ -1,4 +1,4 @@
-// @TODO Step 165
+// @TODO Step 169
 // consider adding fuzzy search 
 /** includes **/
 
@@ -46,11 +46,14 @@ enum editorKey{
 
 enum editorHighlight {
 	HL_NORMAL = 0,
+	HL_COMMENT,
+	HL_STRING,
 	HL_NUMBER,
 	HL_MATCH
 };
 
 #define HL_HIGHLIGHT_NUMBERS (1<<0)
+#define HL_HIGHLIGHT_STRINGS (1<<1)
 
 /** data **/
 
@@ -58,6 +61,7 @@ enum editorHighlight {
 struct editorSyntax {
 	char* filetype;
 	char** filematch;
+	char* singleline_comment_start;
 	int flags;
 };
 
@@ -98,7 +102,8 @@ struct editorSyntax HLDB[] = {
 	{
 	 "c",
 	 C_HL_extensions,
-	 HL_HIGHLIGHT_NUMBERS
+	"//",
+	 HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS
 	},
 };
 
@@ -261,13 +266,52 @@ void editorUpdateSyntax(erow* row){
 
 	if (E.syntax == NULL) return;	
 
+	char *scs = E.syntax->singleline_comment_start;
+	int scs_len = scs ? strlen(scs) : 0;
+
 	int prev_sep = 1;
+	int in_string = 0;
 	
 	// now we loop over the digits and change the digits to HL_NUMBER
 	int i = 0;
 	while (i < row->rsize){
 		char c = row->render[i];
 		unsigned char prev_hl = (i > 0) ? row->hl[i-1] : HL_NORMAL;
+
+		if (scs_len && !in_string) {
+			if (!strncmp(&row->render[i], scs, scs_len)){ // checks if current char is part of the commentstart
+				memset(&row->hl[i], HL_COMMENT, row->rsize - i); // sets entire line to comment color
+				break;
+			}
+		}
+		
+		// if the highlight string flag is raised
+		if (E.syntax->flags & HL_HIGHLIGHT_STRINGS){
+			// and the character is in a string
+			if (in_string) {
+				row->hl[i] = HL_STRING;//color it
+				// exempting escaped chars from making a difference to color
+				if (c == '\\' && i + 1 < row->rsize){
+					row->hl[i+1] = HL_STRING;
+					i += 2;
+					continue;
+				}
+				if ( c == in_string) in_string = 0;//if the char happens to be the matching quote, stop coloring
+				i++;
+				prev_sep = 1; // set it so digits are not exempted
+				continue;
+			}
+			else {
+				// if char is not in a str, but is an quote mark
+				// color it like a str and set in string to it
+				if (c=='"' || c == '\''){
+					in_string = c;
+					row->hl[i] = HL_STRING;
+					i++;
+					continue;
+				}
+			}
+		}
 
 		if (E.syntax->flags & HL_HIGHLIGHT_NUMBERS){
 			if ((isdigit(c) && (prev_sep || prev_hl == HL_NUMBER)) || (c == '.' && prev_hl == HL_NUMBER)){
@@ -285,6 +329,10 @@ void editorUpdateSyntax(erow* row){
 
 int editorSyntaxToColor(int hl){
 	switch(hl){
+		case HL_COMMENT:
+			return 36;
+		case HL_STRING:
+			return 35;
 		case HL_NUMBER:
 			return 31;
 		case HL_MATCH:
